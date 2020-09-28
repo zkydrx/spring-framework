@@ -1,11 +1,11 @@
 /*
- * Copyright 2002-2017 the original author or authors.
+ * Copyright 2002-2020 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *      http://www.apache.org/licenses/LICENSE-2.0
+ *      https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -37,6 +37,7 @@ import org.springframework.web.server.ServerWebExchange;
  * binding from URL query params or form data in the request data to Java objects.
  *
  * @author Rossen Stoyanchev
+ * @author Juergen Hoeller
  * @since 5.0
  */
 public class WebExchangeDataBinder extends WebDataBinder {
@@ -64,7 +65,7 @@ public class WebExchangeDataBinder extends WebDataBinder {
 
 	/**
 	 * Bind query params, form data, and or multipart form data to the binder target.
-	 * @param exchange the current exchange.
+	 * @param exchange the current exchange
 	 * @return a {@code Mono<Void>} when binding is complete
 	 */
 	public Mono<Void> bind(ServerWebExchange exchange) {
@@ -76,10 +77,14 @@ public class WebExchangeDataBinder extends WebDataBinder {
 	/**
 	 * Protected method to obtain the values for data binding. By default this
 	 * method delegates to {@link #extractValuesToBind(ServerWebExchange)}.
+	 * @param exchange the current exchange
+	 * @return a map of bind values
+	 * @since 5.3
 	 */
-	protected Mono<Map<String, Object>> getValuesToBind(ServerWebExchange exchange) {
+	public Mono<Map<String, Object>> getValuesToBind(ServerWebExchange exchange) {
 		return extractValuesToBind(exchange);
 	}
+
 
 	/**
 	 * Combine query params and form data for multipart form data from the body
@@ -87,13 +92,16 @@ public class WebExchangeDataBinder extends WebDataBinder {
 	 * data binding purposes.
 	 * @param exchange the current exchange
 	 * @return a {@code Mono} with the values to bind
+	 * @see org.springframework.http.server.reactive.ServerHttpRequest#getQueryParams()
+	 * @see ServerWebExchange#getFormData()
+	 * @see ServerWebExchange#getMultipartData()
 	 */
 	public static Mono<Map<String, Object>> extractValuesToBind(ServerWebExchange exchange) {
 		MultiValueMap<String, String> queryParams = exchange.getRequest().getQueryParams();
 		Mono<MultiValueMap<String, String>> formData = exchange.getFormData();
 		Mono<MultiValueMap<String, Part>> multipartData = exchange.getMultipartData();
 
-		return Mono.when(Mono.just(queryParams), formData, multipartData)
+		return Mono.zip(Mono.just(queryParams), formData, multipartData)
 				.map(tuple -> {
 					Map<String, Object> result = new TreeMap<>();
 					tuple.getT1().forEach((key, values) -> addBindValue(result, key, values));
@@ -103,7 +111,7 @@ public class WebExchangeDataBinder extends WebDataBinder {
 				});
 	}
 
-	private static void addBindValue(Map<String, Object> params, String key, List<?> values) {
+	protected static void addBindValue(Map<String, Object> params, String key, List<?> values) {
 		if (!CollectionUtils.isEmpty(values)) {
 			values = values.stream()
 					.map(value -> value instanceof FormFieldPart ? ((FormFieldPart) value).value() : value)
