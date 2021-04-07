@@ -470,10 +470,15 @@ public class FormHttpMessageConverter implements HttpMessageConverter<MultiValue
 			contentType = MediaType.MULTIPART_FORM_DATA;
 		}
 
+		Map<String, String> parameters = new LinkedHashMap<>(contentType.getParameters().size() + 2);
+		parameters.putAll(contentType.getParameters());
+
 		byte[] boundary = generateMultipartBoundary();
-		Map<String, String> parameters = new LinkedHashMap<>(2);
 		if (!isFilenameCharsetSet()) {
-			parameters.put("charset", this.charset.name());
+			if (!this.charset.equals(StandardCharsets.UTF_8) &&
+					!this.charset.equals(StandardCharsets.US_ASCII)) {
+				parameters.put("charset", this.charset.name());
+			}
 		}
 		parameters.put("boundary", new String(boundary, StandardCharsets.US_ASCII));
 

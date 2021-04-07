@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2020 the original author or authors.
+ * Copyright 2002-2021 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,6 +27,7 @@ import java.util.Deque;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -251,8 +252,8 @@ public class UriComponentsBuilder implements UriBuilder, Cloneable {
 				builder.schemeSpecificPart(ssp);
 			}
 			else {
-				if (StringUtils.hasLength(scheme) && !StringUtils.hasLength(host)) {
-					throw new IllegalArgumentException("[" + uri + "] is not a valid URI");
+				if (StringUtils.hasLength(scheme) && scheme.startsWith("http") && !StringUtils.hasLength(host)) {
+					throw new IllegalArgumentException("[" + uri + "] is not a valid HTTP URL");
 				}
 				builder.userInfo(userInfo);
 				builder.host(host);
@@ -356,9 +357,19 @@ public class UriComponentsBuilder implements UriBuilder, Cloneable {
 				String value = matcher.group(1).trim();
 				String host = value;
 				int portSeparatorIdx = value.lastIndexOf(':');
-				if (portSeparatorIdx > value.lastIndexOf(']')) {
+				int squareBracketIdx = value.lastIndexOf(']');
+				if (portSeparatorIdx > squareBracketIdx) {
+					if (squareBracketIdx == -1 && value.indexOf(':') != portSeparatorIdx) {
+						throw new IllegalArgumentException("Invalid IPv4 address: " + value);
+					}
 					host = value.substring(0, portSeparatorIdx);
-					port = Integer.parseInt(value.substring(portSeparatorIdx + 1));
+					try {
+						port = Integer.parseInt(value.substring(portSeparatorIdx + 1));
+					}
+					catch (NumberFormatException ex) {
+						throw new IllegalArgumentException(
+								"Failed to parse a port from \"forwarded\"-type header value: " + value);
+					}
 				}
 				return new InetSocketAddress(host, port);
 			}
@@ -411,12 +422,15 @@ public class UriComponentsBuilder implements UriBuilder, Cloneable {
 	 * also escaping characters with reserved meaning.
 	 * <p>For most cases, this method is more likely to give the expected result
 	 * because in treats URI variables as opaque data to be fully encoded, while
-	 * {@link UriComponents#encode()} is useful only if intentionally expanding
-	 * URI variables that contain reserved characters.
+	 * {@link UriComponents#encode()} is useful when intentionally expanding URI
+	 * variables that contain reserved characters.
 	 * <p>For example ';' is legal in a path but has reserved meaning. This
 	 * method replaces ";" with "%3B" in URI variables but not in the URI
 	 * template. By contrast, {@link UriComponents#encode()} never replaces ";"
 	 * since it is a legal character in a path.
+	 * <p>When not expanding URI variables at all, prefer use of
+	 * {@link UriComponents#encode()} since that will also encode anything that
+	 * incidentally looks like a URI variable.
 	 * @since 5.0.8
 	 */
 	public final UriComponentsBuilder encode() {
@@ -697,7 +711,7 @@ public class UriComponentsBuilder implements UriBuilder, Cloneable {
 		Assert.notNull(name, "Name must not be null");
 		if (!ObjectUtils.isEmpty(values)) {
 			for (Object value : values) {
-				String valueAsString = (value != null ? value.toString() : null);
+				String valueAsString = getQueryParamValue(value);
 				this.queryParams.add(name, valueAsString);
 			}
 		}
@@ -708,9 +722,32 @@ public class UriComponentsBuilder implements UriBuilder, Cloneable {
 		return this;
 	}
 
+	@Nullable
+	private String getQueryParamValue(@Nullable Object value) {
+		if (value != null) {
+			return (value instanceof Optional ?
+					((Optional<?>) value).map(Object::toString).orElse(null) :
+					value.toString());
+		}
+		return null;
+	}
+
 	@Override
 	public UriComponentsBuilder queryParam(String name, @Nullable Collection<?> values) {
 		return queryParam(name, (CollectionUtils.isEmpty(values) ? EMPTY_VALUES : values.toArray()));
+	}
+
+	@Override
+	public UriComponentsBuilder queryParamIfPresent(String name, Optional<?> value) {
+		value.ifPresent(o -> {
+			if (o instanceof Collection) {
+				queryParam(name, (Collection<?>) o);
+			}
+			else {
+				queryParam(name, o);
+			}
+		});
+		return this;
 	}
 
 	/**
@@ -859,7 +896,11 @@ public class UriComponentsBuilder implements UriBuilder, Cloneable {
 
 	private void adaptForwardedHost(String rawValue) {
 		int portSeparatorIdx = rawValue.lastIndexOf(':');
-		if (portSeparatorIdx > rawValue.lastIndexOf(']')) {
+		int squareBracketIdx = rawValue.lastIndexOf(']');
+		if (portSeparatorIdx > squareBracketIdx) {
+			if (squareBracketIdx == -1 && rawValue.indexOf(':') != portSeparatorIdx) {
+				throw new IllegalArgumentException("Invalid IPv4 address: " + rawValue);
+			}
 			host(rawValue.substring(0, portSeparatorIdx));
 			port(Integer.parseInt(rawValue.substring(portSeparatorIdx + 1)));
 		}
@@ -999,15 +1040,21 @@ public class UriComponentsBuilder implements UriBuilder, Cloneable {
 			if (this.path.length() == 0) {
 				return null;
 			}
-			String path = this.path.toString();
-			while (true) {
-				int index = path.indexOf("//");
-				if (index == -1) {
-					break;
+			String sanitized = getSanitizedPath(this.path);
+			return new HierarchicalUriComponents.FullPathComponent(sanitized);
+		}
+
+		private static String getSanitizedPath(final StringBuilder path) {
+			int index = path.indexOf("//");
+			if (index >= 0) {
+				StringBuilder sanitized = new StringBuilder(path);
+				while (index != -1) {
+					sanitized.deleteCharAt(index);
+					index = sanitized.indexOf("//", index);
 				}
-				path = path.substring(0, index) + path.substring(index + 1);
+				return sanitized.toString();
 			}
-			return new HierarchicalUriComponents.FullPathComponent(path);
+			return path.toString();
 		}
 
 		public void removeTrailingSlash() {

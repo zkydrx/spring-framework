@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2020 the original author or authors.
+ * Copyright 2002-2021 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@
 package org.springframework.http.codec.multipart;
 
 import java.io.IOException;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -74,10 +75,11 @@ public class DefaultPartHttpMessageReader extends LoggingCodecSupport implements
 
 	private boolean streaming;
 
-	private Scheduler blockingOperationScheduler = Schedulers.newBoundedElastic(Schedulers.DEFAULT_BOUNDED_ELASTIC_SIZE,
-			Schedulers.DEFAULT_BOUNDED_ELASTIC_QUEUESIZE, IDENTIFIER, 60, true);
+	private Scheduler blockingOperationScheduler = Schedulers.boundedElastic();
 
 	private Mono<Path> fileStorageDirectory = Mono.defer(this::defaultFileStorageDirectory).cache();
+
+	private Charset headersCharset = StandardCharsets.UTF_8;
 
 
 	/**
@@ -153,8 +155,9 @@ public class DefaultPartHttpMessageReader extends LoggingCodecSupport implements
 
 	/**
 	 * Sets the Reactor {@link Scheduler} to be used for creating files and
-	 * directories, and writing to files. By default, a bounded scheduler is
-	 * created with default properties.
+	 * directories, and writing to files. By default,
+	 * {@link Schedulers#boundedElastic()} is used, but this property allows for
+	 * changing it to an externally managed scheduler.
 	 * <p>Note that this property is ignored when
 	 * {@linkplain #setStreaming(boolean) streaming} is enabled, or when
 	 * {@link #setMaxInMemorySize(int) maxInMemorySize} is set to -1.
@@ -188,6 +191,18 @@ public class DefaultPartHttpMessageReader extends LoggingCodecSupport implements
 		this.streaming = streaming;
 	}
 
+	/**
+	 * Sets the character set used to decode headers. Defaults to
+	 * UTF-8 as per RFC 7578.
+	 * @param headersCharset the charset to use for decoding headers
+	 * @since 5.3.6
+	 * @see <a href="https://tools.ietf.org/html/rfc7578#section-5.1">RFC-7578 Section 5.2</a>
+	 */
+	public void setHeadersCharset(Charset headersCharset) {
+		Assert.notNull(headersCharset, "HeadersCharset must not be null");
+		this.headersCharset = headersCharset;
+	}
+
 	@Override
 	public List<MediaType> getReadableMediaTypes() {
 		return Collections.singletonList(MediaType.MULTIPART_FORM_DATA);
@@ -214,7 +229,7 @@ public class DefaultPartHttpMessageReader extends LoggingCodecSupport implements
 						message.getHeaders().getContentType() + "\""));
 			}
 			Flux<MultipartParser.Token> tokens = MultipartParser.parse(message.getBody(), boundary,
-					this.maxHeadersSize);
+					this.maxHeadersSize, this.headersCharset);
 
 			return PartGenerator.createParts(tokens, this.maxParts, this.maxInMemorySize, this.maxDiskUsagePerPart,
 					this.streaming, this.fileStorageDirectory, this.blockingOperationScheduler);
@@ -222,12 +237,16 @@ public class DefaultPartHttpMessageReader extends LoggingCodecSupport implements
 	}
 
 	@Nullable
-	private static byte[] boundary(HttpMessage message) {
+	private byte[] boundary(HttpMessage message) {
 		MediaType contentType = message.getHeaders().getContentType();
 		if (contentType != null) {
 			String boundary = contentType.getParameter("boundary");
 			if (boundary != null) {
-				return boundary.getBytes(StandardCharsets.ISO_8859_1);
+				int len = boundary.length();
+				if (len > 2 && boundary.charAt(0) == '"' && boundary.charAt(len - 1) == '"') {
+					boundary = boundary.substring(1, len - 1);
+				}
+				return boundary.getBytes(this.headersCharset);
 			}
 		}
 		return null;
